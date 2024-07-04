@@ -1,0 +1,553 @@
+---
+title: "ADS-506 Final Project - Baggage Complaints"
+author: "Team 4: Sowmiya Kanmani Maruthavanan, Ben Ogle, Vicky van der Wagt"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+     keep_md: true
+  html_document:
+    df_print: paged
+knitr:
+  opts_chunk:
+    warning=FALSE
+---
+
+## Import relevant libraries
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(dplyr)
+library(forecast)
+library(zoo)
+library(ggplot2)
+library(corrplot)
+library(plotly)
+```
+
+## Pre-Processing
+
+### Import data
+
+```{r}
+airlines_df <- read.csv("baggagecomplaints.csv")
+head(airlines_df)
+summary(airlines_df)
+dim(airlines_df)
+```
+
+The dataset contains 252 rows and 8 columns
+
+### Check for null values
+
+```{r}
+missing <- colSums(is.na(airlines_df))
+print(missing)
+```
+
+There are no missing values in this dataset. 
+
+
+### Convert categorical columns into factors
+
+```{r}
+#converting month and year to categorical 
+airlines_df$Month <- factor(airlines_df$Month)
+airlines_df$Year <- factor(airlines_df$Year)
+airlines_df$Airline <- factor(airlines_df$Airline)
+```
+
+
+### Transform data into time series
+
+The time series starts in 2004 and ends in 2010. The frequency is set to 12 because the data is monthly and there are 12 months in a year. 
+
+```{r}
+# Create time series for 3 airlines
+american_eagle.ts <- ts(airlines_df[airlines_df$Airline == "American Eagle", "Baggage"], 
+                        start = c(2004,1), end = c(2010,12), freq = 12)
+
+hawaiian.ts <- ts(airlines_df[airlines_df$Airline == "Hawaiian", "Baggage"], 
+                        start = c(2004,1), end = c(2010,12), freq = 12)
+
+united.ts <- ts(airlines_df[airlines_df$Airline == "United", "Baggage"], 
+                        start = c(2004,1), end = c(2010,12), freq = 12)
+```
+
+### Correlation plot
+
+```{r}
+numerical <- airlines_df[sapply(airlines_df, is.numeric)]
+cor_matrix <- cor(numerical)
+corrplot(cor_matrix,
+         method = "number",
+         tl.col = "black")
+```
+
+There are positive correlations between all the numerical variables 'Baggage', 'Scheduled', 'Canceleled', and 'Enplaned'. High correlations exist between 'Baggage' and 'Scheduled', as well as 'Baggage' and 'Enplaned.' Moderate correlations exist between 'Cancelled' and 'Baggage', as well as 'Bagged' and 'Enplaned.' There is a very weak relationship between 'Cancelled' and 'Emplaned.'
+
+### Feature Creation
+```{r}
+airlines_df$Cancelled_prop <- (airlines_df$Cancelled / airlines_df$Scheduled) * 100
+airlines_df$Flights <- airlines_df$Scheduled - airlines_df$Cancelled
+airlines_df$Enplaned_per_flight <- airlines_df$Enplaned / airlines_df$Flights
+airlines_df$Complaints_per_enplaned <- (airlines_df$Baggage / airlines_df$Enplaned) * 100 
+
+```
+
+#### Created 4 new calculated features:
+
+* Cancelled_prop: the proportion of cancelled flights
+* Flights: the number of flights that were not cancelled
+* Enplaned_per_flight: the number of enplaned passengers per flight
+* Complaints per enplaned: the proportion of complaints over the total number of passengers
+
+### Correlation matrix after feature creation
+
+View the correlation matrix after new features are created
+
+```{r}
+numerical <- airlines_df[sapply(airlines_df, is.numeric)]
+cor_matrix <- cor(numerical)
+corrplot(cor_matrix,
+         method = "number",
+         tl.col = "black",
+         tl.cex = 0.6)
+```
+
+#### The correlation plot after feature creation elicits some new insights:
+
+* Complaints per enplaned indiviudal have a strong positive correlation with the proportion of cancelled flights
+* There is a strong negative relationship between the number of enplaned individuals per flight, and the number of complaints per enplaned individual
+* There is a moderately strong relationship between the proportion of cancelled flights and the number of scheduled flights
+* There is a strong positive relationship between the number of flights and the number of baggage complaints
+
+## Exploratory Data Analysis
+
+```{r}
+# create time series plot
+plot(american_eagle.ts, xlab = "Year", ylab = "Monthly Complaints", ylim = c(1000, 40000), col="green",lwd = 1.5,
+     bty="l", main = "Baggage Complaints by Airline and Month")
+lines(hawaiian.ts, col="orange", lwd = 1.5, bty="l")
+lines(united.ts, col="steelblue", lwd = 1.5, bty="l")
+
+# Add a legend
+legend("topright", legend = c("United", "American Eagle", "Hawaiian"), col = c("steelblue", "green", "orange"), lwd = 1.5)
+```
+
+Throughout the dataset, United Airlines consistently receives the highest number of complaints regarding mishandled baggage each month, while Hawaiian Airlines consistently records the lowest number of complaints in every month.
+
+The above plot shows a mild seasonality for American Eagle and United Airlines as there is a gradual increase in the baggage complaints at the beginning of each year. Additionally, it does not exhibit any trend as there is an increase and decrease in the baggage complaints for the three airlines.
+
+### Monthly Average Complaints for each airline
+
+```{r}
+# Monthly average complaints for each airline
+avg_complaints <- airlines_df %>% 
+  group_by(Airline, Month) %>% summarise_at(vars(Baggage), list(Avg_Complaints = mean))
+
+ggplot(avg_complaints, aes(x = Month, y = Avg_Complaints)) + 
+  geom_line(aes(color = Airline, group = Airline)) + 
+  labs(title = 'Monthly Average complaints', 
+       x = 'Month', 
+       y = 'Average No of complaints') 
+```
+Based on the above chart, on average,  United consistently receives a higher average number of complaints in comparison to other airlines. Additionally, it is observed that the number of complaints shows an increase from May to August and from November to December. Furthermore, the trend for Hawaiian Airlines appears comparatively stable, with less fluctuation compared to the other airlines.
+
+
+### Proportion of complaints for each airline
+
+```{r}
+# Create a Date variable from the 'Date' column
+airlines_df$Date <- as.Date(paste(airlines_df$Year, airlines_df$Month, "01", sep = "-"))
+
+# Line plot for complaints for every month for each airline
+ggplot(airlines_df, aes(x = Date, y = Complaints_per_enplaned, group = Airline, color = Airline)) +
+  geom_line() +
+  labs(title = "",
+       x = "Date",
+       y = "") +  
+  scale_x_date(date_labels = "%Y", date_breaks = "2 years") +  
+  theme_minimal() +
+  facet_wrap(~Airline, scales = "free_y") +  # Separate plots for each airline
+  theme(
+    axis.title.y = element_blank(),  
+    legend.position = "none",  
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+Upon examining the individual charts for each airline, it becomes evident that there was a rise in trends from 2004 to 2006, followed by a subsequent decline. Moreover, the plot highlights that Hawaiian Airlines had a big increase in complaints in 2010, while other airlines had a more steady rise in the number of complaints.
+
+### Explore cancellations over the years
+
+```{r}
+# Explore cancellations over the years
+ggplot(airlines_df, aes(x = as.Date(paste(Year, Month, "01", sep = "-")), y = Cancelled, group = Airline, color = Airline)) +
+  geom_line() + 
+  labs(title = "Cancellations Over the Years", 
+       x = "Date", 
+       y = "Number of Cancellations")
+```
+The above plot illustrates the annual trend of cancelled flights. It is observed that American Eagle has the highest count of cancelled flights and highest frequency of cancellations occur in January.
+
+### Explore the trend in the Cancelled flights for each airline
+
+```{r}
+# Create a Date variable from the 'Date' column
+airlines_df$Date <- as.Date(paste(airlines_df$Year, airlines_df$Month, "01", sep = "-"))
+
+# Line plot of cancelled flights for each airline
+ggplot(airlines_df, aes(x = Date, y = Cancelled, group = Airline, color = Airline)) +
+  geom_line() +
+  labs(title = "",
+       x = "Date",
+       y = "") +  
+  scale_x_date(date_labels = "%Y", date_breaks = "2 years") +  
+  theme_minimal() +
+  facet_wrap(~Airline, scales = "free_y") +  # Separate plots for each airline
+  theme(
+    axis.title.y = element_blank(),  
+    legend.position = "none",  
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+In the provided graph, American Eagle and United share a similar pattern in the number of cancelled flights over the years, while Hawaiian Airlines demonstrates relatively fewer ups and downs. Hawaiian flight cancellations reached their highest point in 2008 and started to decrease afterward.
+
+### Explore monthly Cancelled proportions 
+
+```{r}
+# Working on this 
+
+# ggplot(airlines_df, aes(x = Month, y = Cancelled_prop, color = Airline)) +
+#   geom_line() +
+#   theme_minimal() +
+#   labs(title = "Cancelled Proportions of Each Airline Over Months",
+#        x = "Month",
+#        y = "") +
+#   scale_color_discrete(name = "Airline") +
+#   theme(legend.position = "top")
+```
+
+### Relationship between Baggage Complaints and Cancelled Flights
+
+```{r}
+# Calculate correlation coefficient
+corr_coeff <- cor(airlines_df$Cancelled, airlines_df$Baggage)
+cat("Correlation coefficient between Cancelled Flights and Baggage Complaints:", corr_coeff, "\n")
+
+# Scatter plot of Baggage vs. Cancelled
+ggplot(airlines_df, aes(x = Cancelled, y = Baggage, color=Airline)) +
+  geom_point() +
+  labs(title = "Scatter plot of Cancelled Flights vs. Baggage Complaints",
+       x = "Cancelled Flights",
+       y = "Baggage Complaints")
+```
+A correlation coefficient of 0.5944 indicates a moderate positive correlation between the number of cancelled flights and the number of baggage complaints. 
+
+Based on the plot, it is observed that there is a general upward trend indicating that there is a tendency for higher baggage complaints when there are more cancelled flights. Moreover, it is important to note that correlation does not imply causation. While there is a statistical association between cancelled flights and baggage complaints, it doesn't necessarily mean that one causes the other. There could be other factors influencing both variables.
+
+
+## Modeling
+
+To being looking at airline baggage complaints, it is important to see the trends for each airline. One plot has been created for each airline, so we can clearly see the time series models for each airline. In addition to trends, a moving average has been added to aid in visualization of the data.
+
+American Eagle Airlines Trend
+
+```{r}
+# Fit a trend line model
+american_eagle_trend_model <- lm(american_eagle.ts ~ time(american_eagle.ts))
+
+# Create a data frame for american eagle airlines
+american_eagle_df <- data.frame(
+  date = time(american_eagle.ts), 
+  complaints = as.numeric(american_eagle.ts), 
+  trend = predict(american_eagle_trend_model),
+  moving_avg = ma(american_eagle.ts, order = 12))
+
+colors <- c("American Eagle Airlines" = "green", "Trend" = "black", "Moving Average" = "red")
+
+# Create a ggplot with trend line and legend
+ggplot(american_eagle_df, aes(x = date)) +
+  geom_line(aes(y = complaints, color = "American Eagle Airlines"), size = 1) +
+  geom_line(aes(y = trend, color = "Trend"), size = 1) +
+  geom_line(aes(y = moving_avg, color = "Moving Average"), size = 1) +
+  labs(title = "Baggage Complaints for American Eagle Airlines",
+       x = "Year", y = "Number of Complaints", color = "Legend") +
+  scale_color_manual(name = "Legend", values = colors) +
+  ylim(c(5000, 30000))
+```
+
+```{r}
+# Get the trend for each season (month) for American Eagle Airlines
+ae_lm_trend_season <- tslm(american_eagle.ts ~ trend + I(trend^2) + season)
+ae_lm_trend_season
+```
+
+```{r}
+# ACF plot of American Eagle Airlines
+Acf(american_eagle.ts, lag.max = 12, main = "ACF Plot of American Airlines Baggage Complaints")
+```
+
+United Airlines Trend
+
+```{r}
+# Fit a trend line model
+united_trend_model <- lm(united.ts ~ time(united.ts))
+
+# Create a data frame for united airlines
+united_df <- data.frame(
+  date = time(united.ts), 
+  complaints = as.numeric(united.ts), 
+  trend = predict(united_trend_model),
+  moving_avg = ma(united.ts, order = 12))
+
+colors <- c("United Airlines" = "blue", "Trend" = "black", "Moving Average" = "red")
+
+# Create a ggplot with trend line and legend
+ggplot(united_df, aes(x = date)) +
+  geom_line(aes(y = complaints, color = "United Airlines"), size = 1) +
+  geom_line(aes(y = trend, color = "Trend"), size = 1) +
+  geom_line(aes(y = moving_avg, color = "Moving Average"), size = 1) +
+  labs(title = "Baggage Complaints for United Airlines",
+       x = "Year", y = "Number of Complaints", color = "Legend") +
+  scale_color_manual(name = "Legend", values = colors) +
+  ylim(c(9000, 42000))
+```
+
+```{r}
+# Get the trend for each season (month) for United Airlines
+united_lm_trend_season <- tslm(united.ts ~ trend + I(trend^2) + season)
+united_lm_trend_season
+```
+
+```{r}
+# ACF plot of United Airlines
+Acf(united.ts, lag.max = 12, main = "ACF Plot of United Airlines Baggage Complaints")
+```
+
+Hawaiian Airlines Trend
+
+```{r}
+# Fit a trend line model
+hawaiian_trend_model <- lm(hawaiian.ts ~ time(hawaiian.ts))
+
+# Create a data frame for ggplot
+hawaiian_df <- data.frame(
+  date = time(hawaiian.ts), 
+  complaints = as.numeric(hawaiian.ts), 
+  trend = predict(hawaiian_trend_model),
+  moving_avg = ma(hawaiian.ts, order = 12))
+
+colors <- c("Hawaiian Airlines" = "orange", "Trend" = "black", "Moving Average" = "red")
+
+# Create a ggplot with trend line and legend
+ggplot(hawaiian_df, aes(x = date)) +
+  geom_line(aes(y = complaints, color = "Hawaiian Airlines"), size = 1) +
+  geom_line(aes(y = trend, color = "Trend"), size = 1) +
+  geom_line(aes(y = moving_avg, color = "Moving Average"), size = 1) +
+  labs(
+    title = "Baggage Complaints for Hawaiian Airlines",
+    x = "Year", y = "Number of Complaints", color = "Legend"
+  ) +
+  scale_color_manual(name = "Legend", values = colors) +
+  ylim(c(1000, 3000))
+```
+
+```{r}
+# Get the trend for each season (month) for Hawaiian Airlines
+hawiian_lm_trend_season <- tslm(hawaiian.ts ~ trend + I(trend^2) + season)
+hawiian_lm_trend_season
+```
+
+```{r}
+# ACF plot of Hawaiian Airlines
+Acf(hawaiian.ts, lag.max = 12, main = "ACF Plot of Hawiian Airlines Baggage Complaints")
+```
+
+Based on trends from all three airlines, American Eagle and United are trending towards a decline in the number of total complains. However, Hawaiian airlines is trending towards an increase in total baggage complaints. American Eagle Airlines is pushing above the moving average, United Airlines is below the moving average, but is starting to experience an upward shift, and Hawaiian Airlines is pushing far above the moving average and shows no sign of slowing down.
+
+Split the data into train and validation datasets.
+
+```{r}
+# Set the cutoff date for the training period
+cutoff <- as.Date("2010-01-01")
+
+# Create the training and validation datasets
+ae_train_data <- subset(airlines_df, Airline == "American Eagle" & Date < cutoff)
+ae_validation_data <- subset(airlines_df, Airline == "American Eagle" & Date >= cutoff)
+
+# Create a time series for training data
+ae_ts_train <- ts(ae_train_data$Baggage, 
+                  start = c(2004, 1), end = c(2009, 12), frequency = 12)
+
+# Create a time series for validation data
+ae_ts_valid <- ts(ae_validation_data$Baggage, 
+                  start = c(2010, 1), end = c(2010, 12), frequency = 12)
+```
+
+```{r}
+# Create an ARIMA model for American Eagle Airlines
+arima_american_eagle <- auto.arima(ae_ts_train)  
+pred_american_eagle <- forecast(arima_american_eagle, h = 12)
+pred_american_eagle_fitted <- pred_american_eagle$fitted
+
+# create a new data frame with the original and ARIMA model
+residuals_df_american_eagle <- data.frame(
+  time = time(ae_ts_train),
+  original = as.numeric(ae_ts_train),
+  smoothed = pred_american_eagle_fitted
+)
+
+colors <- c("American Eagle Airlines" = "green", "American Eagle Airlines ARIMA" = "chartreuse4")
+
+# Create ggplot
+ggplot(residuals_df_american_eagle, aes(x = time)) +
+  geom_line(aes(y = original, color = "American Eagle Airlines"), size = 1) +
+  geom_line(aes(y = smoothed, color = "American Eagle Airlines ARIMA"), size = 1) +
+  labs(
+    title = "American Eagle Airlines Baggage Complaints",
+    x = "Year",
+    y = "Number of Complaints"
+  ) +
+  scale_color_manual(name = "Legend", values = colors) +
+  ylim(c(5000, 30000))
+```
+
+```{r}
+# Calculate the mean of the training data
+mean_american_eagle <- mean(as.numeric(ae_ts_train))
+
+# Calculate the mean for the length of the training dataset
+american_eagle_predicted_values <- rep(mean_american_eagle, length(ae_ts_train))
+
+# Compute RMSE
+american_eagle_rmse_pred <- sqrt(mean((american_eagle_predicted_values - as.numeric(ae_ts_train))^2))
+print(paste("RMSE for the training period (using mean):", round(american_eagle_rmse_pred, 2)))
+```
+
+```{r}
+# Get the summary of the ARIMA model (RMSE, forecasts, etc.)
+summary(pred_american_eagle)
+```
+
+```{r}
+# Create the training and validation datasets
+united_train_data <- subset(airlines_df, Airline == "United" & Date < cutoff)
+united_validation_data <- subset(airlines_df, Airline == "United" & Date >= cutoff)
+
+# Create a time series for training data
+united_ts_train <- ts(united_train_data$Baggage, 
+                  start = c(2004, 1), end = c(2009, 12), frequency = 12)
+
+# Create a time series for validation data
+united_ts_valid <- ts(united_validation_data$Baggage, 
+                  start = c(2010, 1), end = c(2010, 12), frequency = 12)
+```
+
+
+```{r}
+# Create an ARIMA model for Hawaiian Airlines
+arima_united <- auto.arima(united_ts_train)  
+pred_united <- forecast(arima_united, h = 12)
+pred_united_fitted <- pred_united$fitted
+
+# Data preparation
+residuals_df_american_eagle <- data.frame(
+  time = time(united_ts_train),
+  original = as.numeric(united_ts_train),
+  smoothed = pred_united_fitted
+)
+
+colors <- c("United Airlines" = "blue", "United Airlines ARIMA" = "deepskyblue")
+
+# Create ggplot
+ggplot(residuals_df_american_eagle, aes(x = time)) +
+  geom_line(aes(y = original, color = "United Airlines"), size = 1) +
+  geom_line(aes(y = smoothed, color = "United Airlines ARIMA"), size = 1) +
+  labs(
+    title = "United Airlines Baggage Complaints",
+    x = "Year",
+    y = "Number of Complaints"
+  ) +
+  scale_color_manual(name = "Legend", values = colors) +
+  ylim(c(9000, 42000))
+```
+
+```{r}
+# Calculate the mean of the training data
+mean_united <- mean(as.numeric(united_ts_train))
+
+# Calculate the mean for the length of the training dataset
+united_predicted_values <- rep(mean_united, length(united_ts_train))
+
+# Compute RMSE
+hawiian_rmse_pred <- sqrt(mean((united_predicted_values - as.numeric(united_ts_train))^2))
+print(paste("RMSE for the training period (using mean):", round(hawiian_rmse_pred, 2)))
+```
+
+
+```{r}
+# Get the summary of the ARIMA model (RMSE, forecasts, etc.)
+summary(pred_united)
+```
+
+```{r}
+# Create the training and validation datasets
+hawaiian_train_data <- subset(airlines_df, Airline == "Hawaiian" & Date < cutoff)
+hawaiian_validation_data <- subset(airlines_df, Airline == "Hawaiian" & Date >= cutoff)
+
+# Create a time series for training data
+hawaiian_ts_train <- ts(hawaiian_train_data$Baggage, 
+                  start = c(2004, 1), end = c(2009, 12), frequency = 12)
+
+# Create a time series for validation data
+hawaiian_ts_valid <- ts(hawaiian_validation_data$Baggage, 
+                  start = c(2010, 1), end = c(2010, 12), frequency = 12)
+```
+
+
+```{r}
+# Create an ARIMA model for Hawaiian Airlines
+arima_hawaiian <- auto.arima(hawaiian_ts_train)  
+pred_hawaiian <- forecast(arima_hawaiian, h = 12)
+pred_hawaiian_fitted <- pred_hawaiian$fitted
+
+# Data preparation
+residuals_df_american_eagle <- data.frame(
+  time = time(hawaiian_ts_train),
+  original = as.numeric(hawaiian_ts_train),
+  smoothed = pred_hawaiian_fitted
+)
+
+colors <- c("Hawaiian Airlines" = "orange", "Hawaiian Airlines ARIMA" = "chocolate")
+
+# Create ggplot
+ggplot(residuals_df_american_eagle, aes(x = time)) +
+  geom_line(aes(y = original, color = "Hawaiian Airlines"), size = 1) +
+  geom_line(aes(y = smoothed, color = "Hawaiian Airlines ARIMA"), size = 1) +
+  labs(
+    title = "Hawaiian Airlines Baggage Complaints",
+    x = "Time",
+    y = "Number of Complaints"
+  ) +
+  scale_color_manual(name = "Legend", values = colors) +
+  ylim(c(1000, 3000))
+```
+
+```{r}
+# Calculate the mean of the training data
+mean_hawiian <- mean(as.numeric(hawaiian_ts_train))
+
+# Calculate the mean for the length of the training dataset
+hawiian_predicted_values <- rep(mean_hawiian, length(hawaiian_ts_train))
+
+# Compute RMSE
+hawiian_rmse_pred <- sqrt(mean((hawiian_predicted_values - as.numeric(hawaiian_ts_train))^2))
+print(paste("RMSE for the original data (using mean):", round(hawiian_rmse_pred, 2)))
+```
+
+
+```{r}
+# Get the summary of the ARIMA model (RMSE, forecasts, etc.)
+summary(pred_hawaiian)
+```
